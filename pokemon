@@ -7,15 +7,29 @@ import sys
 
 from proxmoxer import ProxmoxAPI   # docs at https://proxmoxer.github.io/docs/2.0/basic_usage/
 
+# import config
+
 SERVER='pikachu.fit.vutbr.cz'
 DOMAIN='fit.vutbr.cz'
-PM_USER='root'
+# PM_USER='root'
+PM_USER='guest@pve'
+# TOKEN_ID='guest@pve!script'
+TOKEN_ID='script'
+TOKEN_SECRET='71886fb6-d441-45bb-b898-ce635d632661'
 
 VM_USER="ondra"
 
 PORT_BASE = 6000
 
-prox = ProxmoxAPI(SERVER, user=PM_USER, backend='openssh')
+prox = ProxmoxAPI(
+           SERVER,
+           user=PM_USER,
+           token_name=TOKEN_ID,
+           token_value=TOKEN_SECRET,
+           backend='https',
+         )
+
+# prox = ProxmoxAPI(SERVER, user=PM_USER, backend='openssh')
 # for node in prox.nodes.get():
 #     print(node)
 #     print(prox.nodes(node['node']).qemu.get())
@@ -26,10 +40,12 @@ prox = ProxmoxAPI(SERVER, user=PM_USER, backend='openssh')
 
 ###########################################
 def get_node_port_for_vm(vmname):
-    for vm in prox.cluster.resources.get(type="vm"):
+    vms = prox.cluster.resources.get(type="vm")
+    # print(vms)
+    for vm in vms:
+    # for vm in prox.cluster.resources.get(type="vm"):
+        # print(f"Looking at VM {vm['name']}")
         if vm['name'] == vmname:
-            # print(vm)
-
             node = vm['node']
             netifcs = prox.nodes(node).qemu(vm['vmid']).agent("network-get-interfaces").get()
             # print(netifcs)
