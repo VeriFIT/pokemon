@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+import re
+import sys
+
+from proxmoxer import ProxmoxAPI   # docs at https://proxmoxer.github.io/docs/2.0/basic_usage/
+
+SERVER='pikachu.fit.vutbr.cz'
+DOMAIN='fit.vutbr.cz'
+PM_USER='root'
+
+VM_USER="ondra"
+
+PORT_BASE = 6000
+
+prox = ProxmoxAPI(SERVER, user=PM_USER, backend='openssh')
+# for node in prox.nodes.get():
+#     print(node)
+#     print(prox.nodes(node['node']).qemu.get())
+#     for vm in prox.nodes(node['node']).qemu.get():
+#         print(vm)
+#
+# print("bla")
+
+###########################################
+def get_node_port_for_vm(vmname):
+    for vm in prox.cluster.resources.get(type="vm"):
+        if vm['name'] == vmname:
+            # print(vm)
+
+            node = vm['node']
+            netifcs = prox.nodes(node).qemu(vm['vmid']).agent("network-get-interfaces").get()
+            # print(netifcs)
+            for ifc in netifcs['result']:
+                # print(ifc)
+                for ip_addr in ifc['ip-addresses']:
+                    # print(ip_addr)
+                    m = re.match("10\.10\.10\.(.*)", ip_addr['ip-address'])
+                    if m:
+                        # print(ip_addr['ip-address'])
+                        port_offset = int(m[1])
+
+            return (node, PORT_BASE + port_offset)
+
+###########################################
+def connect_to_vm(args):
+    """connect_to_vm(args) ->
+
+
+"""
+    # print(get_ssh_connection(args.vm_name))
+    (node, port) = get_node_port_for_vm(args.vm_name)
+
+    ssh_args = ["ssh", f"{VM_USER}@{node}.{DOMAIN}", "-p", f"{port}"]
+    # print(ssh_args)
+    os.execvp("ssh", ssh_args)
+
+
+###########################################
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        prog="pokemon",
+        description='Management script for Pokemon VMs')
+    subparsers = parser.add_subparsers(help='sub-command help')
+    parser_connect = subparsers.add_parser('connect', help="connect to a VM")
+    parser_connect.add_argument('vm_name', type=str, help='VM name')
+    parser_connect.set_defaults(func=connect_to_vm)
+    args = parser.parse_args()
+    args.func(args)
