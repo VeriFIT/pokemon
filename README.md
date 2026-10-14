@@ -23,11 +23,15 @@ Instead of `token_secret_file`, the secret can also be passed in `$PROXXX_TOKEN_
 
 ```
 pokemon list [-r]                          # list VMs (-r: only running ones)
-pokemon connect [-l user] [-n] VM [CMD]    # ssh to a VM (-n: only print the ssh command)
-pokemon mount [-l user] [-n] [-o opt]... VM [REMOTE_PATH] [MOUNTPOINT]
+pokemon connect [-l user] [-n] [VM [CMD]]  # ssh to a VM (-n: only print the ssh command)
+pokemon mount [-l user] [-n] [-o opt]... [VM [REMOTE_PATH [MOUNTPOINT]]]
                                            # mount VM's REMOTE_PATH (default: home) via sshfs
                                            # to MOUNTPOINT (default: $HOME/mnt)
 ```
+
+Without VM, `connect` and `mount` let you choose from the running VMs in a menu
+(arrow keys to move, typing filters, Enter selects, Esc cancels; uses
+[fzf](https://github.com/junegunn/fzf) if it is installed).
 
 Unmount with `fusermount -u MOUNTPOINT`.
 

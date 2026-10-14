@@ -7,6 +7,7 @@ which holds the cluster URL and API token in its own config
 """
 
 import argparse
+import curses
 import getpass
 import ipaddress
 import json
@@ -71,8 +72,98 @@ def get_vms(args):
 
 
 ###########################################
+def format_vm(vm, width):
+    return f"{vm['name']:<{width}}  {vm['vmid']:>5}  {vm['node']:<10}  {vm['status']}"
+
+
+###########################################
+def select_vm(vms):
+    """select_vm(vms) -> a VM from vms chosen interactively (via fzf if available)"""
+    if not vms:
+        die("no running VMs")
+    if not sys.stdin.isatty():
+        die("no VM name given and stdin is not a terminal")
+
+    vms = sorted(vms, key=lambda vm: vm['name'])
+    width = max(len(vm['name']) for vm in vms)
+    lines = [format_vm(vm, width) for vm in vms]
+
+    if shutil.which("fzf"):
+        proc = subprocess.run(["fzf", "--prompt=VM> ", "--height=40%", "--reverse"],
+                              input="\n".join(lines), stdout=subprocess.PIPE, text=True)
+        if proc.returncode != 0:    # nothing selected (Esc / Ctrl-C)
+            sys.exit(1)
+        return vms[lines.index(proc.stdout.rstrip("\n"))]
+
+    if not sys.stdout.isatty():
+        die("no VM name given and stdout is not a terminal (install fzf or give a VM name)")
+    os.environ.setdefault('ESCDELAY', '25')    # make Esc respond without curses' default 1s delay
+    try:
+        idx = curses.wrapper(menu, lines)
+    except KeyboardInterrupt:
+        idx = None
+    if idx is None:
+        sys.exit(1)
+    return vms[idx]
+
+
+###########################################
+def menu(scr, lines):
+    """menu(scr, lines) -> index of the line chosen in a curses menu, None if cancelled
+
+Arrows/PgUp/PgDn/Home/End move, Enter selects, Esc cancels, typing filters.
+"""
+    curses.curs_set(0)
+    query = ""
+    cur = 0      # position of the cursor in the filtered list
+    top = 0      # first visible line of the filtered list
+    while True:
+        shown = [i for (i, line) in enumerate(lines) if query.lower() in line.lower()]
+        (height, width) = scr.getmaxyx()
+        rows = max(height - 1, 1)
+        cur = max(0, min(cur, len(shown) - 1))
+        top = max(min(top, cur), cur - rows + 1, 0)
+
+        scr.erase()
+        scr.addnstr(0, 0, f"VM> {query}  ({len(shown)}/{len(lines)})", width - 1, curses.A_BOLD)
+        for (row, i) in enumerate(shown[top:top + rows], 1):
+            if row >= height:
+                break
+            attr = curses.A_REVERSE if top + row - 1 == cur else curses.A_NORMAL
+            scr.addnstr(row, 0, lines[i], width - 1, attr)
+        scr.refresh()
+
+        key = scr.get_wch()
+        if key in (curses.KEY_UP, '\x10'):                 # Ctrl-P
+            cur -= 1
+        elif key in (curses.KEY_DOWN, '\x0e'):             # Ctrl-N
+            cur += 1
+        elif key == curses.KEY_PPAGE:
+            cur -= rows
+        elif key == curses.KEY_NPAGE:
+            cur += rows
+        elif key == curses.KEY_HOME:
+            cur = 0
+        elif key == curses.KEY_END:
+            cur = len(shown) - 1
+        elif key in ('\n', '\r', curses.KEY_ENTER):
+            if shown:
+                return shown[cur]
+        elif key == '\x1b':                                # Esc
+            return None
+        elif key in (curses.KEY_BACKSPACE, '\x7f', '\b'):
+            query = query[:-1]
+        elif isinstance(key, str) and key.isprintable():
+            query += key
+            cur = 0
+
+
+###########################################
 def find_vm(args, vmname):
-    """find_vm(args, vmname) -> the proxxx guest record of the VM"""
+    """find_vm(args, vmname) -> the proxxx guest record of the VM (chosen interactively if vmname is None)"""
+    if vmname is None:
+        return select_vm([vm for vm in get_vms(args) if vm['status'] == 'running'])
+
     vms = [vm for vm in get_vms(args) if vm.get('name') == vmname]
     if not vms:
         die(f"VM '{vmname}' not found (VMs on offline nodes are not visible)")
@@ -148,7 +239,7 @@ def list_vms(args):
         vms = [vm for vm in vms if vm['status'] == 'running']
     width = max((len(vm['name']) for vm in vms), default=0)
     for vm in vms:
-        print(f"{vm['name']:<{width}}  {vm['vmid']:>5}  {vm['node']:<10}  {vm['status']}")
+        print(format_vm(vm, width))
 
 
 ###########################################
@@ -165,7 +256,7 @@ if __name__ == '__main__':
                                 help='user name in the VM (default: $POKEMON_VM_USER or local user name)')
     parser_connect.add_argument('-n', '--dry-run', action='store_true',
                                 help='only print the ssh command')
-    parser_connect.add_argument('vm_name', type=str, help='VM name')
+    parser_connect.add_argument('vm_name', nargs='?', help='VM name (default: choose interactively)')
     parser_connect.add_argument('ssh_args', nargs=argparse.REMAINDER,
                                 help='further arguments passed to ssh (e.g., a command)')
     parser_connect.set_defaults(func=connect_to_vm)
@@ -177,7 +268,7 @@ if __name__ == '__main__':
                               help='only print the sshfs command')
     parser_mount.add_argument('-o', dest='options', action='append', default=[],
                               help='sshfs option (can be repeated)')
-    parser_mount.add_argument('vm_name', type=str, help='VM name')
+    parser_mount.add_argument('vm_name', nargs='?', help='VM name (default: choose interactively)')
     parser_mount.add_argument('remote_path', nargs='?', default='',
                               help='directory in the VM (default: the user\'s home)')
     parser_mount.add_argument('mountpoint', nargs='?', default=os.path.join(os.path.expanduser('~'), 'mnt'),
