@@ -24,7 +24,8 @@ Instead of `token_secret_file`, the secret can also be passed in `$PROXXX_TOKEN_
 ## Usage
 
 ```
-pokemon list [-r]                          # list VMs (-r: only running ones)
+pokemon list [-r] [-L]                     # list VMs (-r: only running ones,
+                                           # -L: when each VM was last running)
 pokemon connect [-l user] [-n] [VM [CMD]]  # ssh to a VM (-n: only print the ssh command)
 pokemon start [VM]                         # start a VM
 pokemon stop [-f] [-t secs] [--allow-risk] [VM]

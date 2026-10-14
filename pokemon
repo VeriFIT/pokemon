@@ -7,7 +7,9 @@ which holds the cluster URL and API token in its own config
 """
 
 import argparse
+import concurrent.futures
 import curses
+import datetime
 import getpass
 import ipaddress
 import json
@@ -282,14 +284,41 @@ def stop_vm(args):
 
 
 ###########################################
+def get_last_run(args, vm):
+    """get_last_run(args, vm) -> string with the last time the VM was running
+
+Taken from the VM's RRD statistics: the newest sample with memory in use.
+'month' has 12-hour samples, 'year' ~weekly ones (marked with '~').
+"""
+    if vm['status'] == 'running':
+        return "now"
+    for (timeframe, prefix) in (('month', ''), ('year', '~')):
+        (res,) = proxxx(args, 'metrics', 'vm', str(vm['vmid']), '--node', vm['node'],
+                        '--field', 'mem', '--timeframe', timeframe, '--cf', 'max')
+        times = [pt['time'] for pt in res['points'] if pt.get('value')]
+        if times:
+            return prefix + datetime.date.fromtimestamp(max(times)).isoformat()
+    return "-"
+
+
+###########################################
 def list_vms(args):
     """list_vms(args) -> prints the VMs in the cluster"""
     vms = sorted(get_vms(args), key=lambda vm: vm['name'])
     if args.running:
         vms = [vm for vm in vms if vm['status'] == 'running']
-    width = max((len(vm['name']) for vm in vms), default=0)
-    for vm in vms:
-        print(format_vm(vm, width))
+    width = max((len(vm['name']) for vm in vms + [{'name': 'NAME'}]))
+
+    if args.last_run:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            last_runs = list(pool.map(lambda vm: get_last_run(args, vm), vms))
+        print(f"{format_header(width):<{width + 30}}  LAST RUNNING")
+        for (vm, last_run) in zip(vms, last_runs):
+            print(f"{format_vm(vm, width):<{width + 30}}  {last_run}")
+    else:
+        print(format_header(width))
+        for vm in vms:
+            print(format_vm(vm, width))
 
 
 ###########################################
@@ -342,6 +371,8 @@ if __name__ == '__main__':
     parser_list = subparsers.add_parser('list', help="list VMs")
     parser_list.add_argument('-r', '--running', action='store_true',
                              help='only running VMs')
+    parser_list.add_argument('-L', '--last-run', action='store_true',
+                             help='show when each VM was last running (slower; "-" = not in the last year)')
     parser_list.set_defaults(func=list_vms)
 
     args = parser.parse_args()
