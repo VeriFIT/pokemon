@@ -17,6 +17,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 
 PROXXX = os.environ.get('POKEMON_PROXXX', 'proxxx')
 DOMAIN = 'fit.vutbr.cz'
@@ -25,6 +27,9 @@ DOMAIN = 'fit.vutbr.cz'
 # to port 22 of the VM with that address
 VM_NETWORK = ipaddress.ip_network('10.10.10.0/24')
 PORT_BASE = 6000
+
+# how long (in seconds) shell completion reuses the cached list of VMs
+COMPLETION_CACHE_TTL = 60
 
 
 ###########################################
@@ -258,6 +263,7 @@ def vm_task(args, vm, action, *cmd):
         else:
             die(f"{action} of VM '{vm['name']}' failed: "
                 f"{res.get('message') or res.get('reason') or res.get('error')}")
+    invalidate_completion_cache(args)
 
 
 ###########################################
@@ -403,7 +409,150 @@ def show_cluster(args):
 
 
 ###########################################
+def completion_cache_path(args):
+    cache_dir = os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache')
+    return os.path.join(cache_dir, 'pokemon', f"vms-{args.profile or 'default'}.json")
+
+
+def invalidate_completion_cache(args):
+    try:
+        os.remove(completion_cache_path(args))
+    except OSError:
+        pass
+
+
+def complete_vms(args, status):
+    """complete_vms(args, status) -> prints names of VMs with the given status (all if None)
+
+Used by shell completion; the list of VMs is cached for COMPLETION_CACHE_TTL seconds.
+"""
+    path = completion_cache_path(args)
+    vms = None
+    try:
+        if time.time() - os.path.getmtime(path) < COMPLETION_CACHE_TTL:
+            with open(path) as f:
+                vms = json.load(f)
+    except (OSError, ValueError):
+        pass
+
+    if vms is None:
+        vms = [{'name': vm['name'], 'status': vm['status']} for vm in get_vms(args)]
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(path), delete=False) as f:
+                json.dump(vms, f)
+            os.replace(f.name, path)
+        except OSError:
+            pass
+
+    for vm in vms:
+        if status in (None, vm['status']):
+            print(vm['name'])
+
+
+ZSH_COMPLETION = r'''_pokemon() {
+  local -a cmds
+  cmds=(
+    'list:list VMs'
+    'cluster:show nodes of the cluster'
+    'connect:connect to a VM'
+    'mount:mount a VM filesystem via sshfs'
+    'start:start a VM'
+    'stop:shut a VM down'
+    'rm:remove a VM'
+    'completion:print a shell completion script'
+  )
+  local cmd= profile= skip= nargs=0 i w vm_status
+  for (( i = 2; i < CURRENT; i++ )); do
+    w=${words[i]}
+    if [[ -n $skip ]]; then
+      [[ $skip == profile ]] && profile=$w
+      skip=
+      continue
+    fi
+    case $w in
+      --profile) skip=profile ;;
+      --profile=*) profile=${w#--profile=} ;;
+      -l|--user|-o|-t|--timeout) skip=1 ;;
+      -*) ;;
+      *) if [[ -z $cmd ]]; then cmd=$w; else (( nargs++ )); fi ;;
+    esac
+  done
+  [[ -n $skip ]] && return 1    # completing the value of an option
+
+  if [[ -z $cmd ]]; then
+    _describe 'command' cmds
+    return
+  fi
+  case $cmd in
+    connect|mount|stop) vm_status=running ;;
+    start|rm) vm_status=stopped ;;
+    completion) (( nargs == 0 )) && compadd bash zsh; return ;;
+    *) return 1 ;;
+  esac
+  if (( nargs == 0 )); then
+    local -a vms
+    vms=(${(f)"$(pokemon __complete $vm_status $profile 2>/dev/null)"})
+    compadd -a vms
+  elif [[ $cmd == mount ]] && (( nargs == 2 )); then
+    _files -/
+  fi
+}
+compdef _pokemon pokemon
+'''
+
+BASH_COMPLETION = r'''_pokemon() {
+  local cur=${COMP_WORDS[COMP_CWORD]} cmd= profile= skip= nargs=0 i w vm_status
+  for (( i = 1; i < COMP_CWORD; i++ )); do
+    w=${COMP_WORDS[i]}
+    if [[ -n $skip ]]; then
+      [[ $skip == profile ]] && profile=$w
+      skip=
+      continue
+    fi
+    case $w in
+      --profile) skip=profile ;;
+      --profile=*) profile=${w#--profile=} ;;
+      -l|--user|-o|-t|--timeout) skip=1 ;;
+      -*) ;;
+      *) if [[ -z $cmd ]]; then cmd=$w; else (( nargs++ )); fi ;;
+    esac
+  done
+  [[ -n $skip ]] && return    # completing the value of an option
+
+  if [[ -z $cmd ]]; then
+    COMPREPLY=($(compgen -W "list cluster connect mount start stop rm completion" -- "$cur"))
+    return
+  fi
+  case $cmd in
+    connect|mount|stop) vm_status=running ;;
+    start|rm) vm_status=stopped ;;
+    completion) (( nargs == 0 )) && COMPREPLY=($(compgen -W "bash zsh" -- "$cur")); return ;;
+    *) return ;;
+  esac
+  if (( nargs == 0 )); then
+    COMPREPLY=($(compgen -W "$(pokemon __complete $vm_status $profile 2>/dev/null)" -- "$cur"))
+  elif [[ $cmd == mount ]] && (( nargs == 2 )); then
+    COMPREPLY=($(compgen -d -- "$cur"))
+  fi
+}
+complete -F _pokemon pokemon
+'''
+
+
+def print_completion(args):
+    """print_completion(args) -> prints the shell completion script"""
+    print(ZSH_COMPLETION if args.shell == 'zsh' else BASH_COMPLETION, end='')
+
+
+###########################################
 if __name__ == '__main__':
+    # hidden command used by the shell completion: pokemon __complete STATUS [PROFILE]
+    if len(sys.argv) >= 3 and sys.argv[1] == '__complete':
+        profile = sys.argv[3] if len(sys.argv) > 3 else os.environ.get('POKEMON_PROXXX_PROFILE')
+        complete_vms(argparse.Namespace(profile=profile), sys.argv[2])
+        sys.exit(0)
+
     parser = argparse.ArgumentParser(
         prog="pokemon",
         description='Management script for Pokemon VMs')
@@ -464,6 +613,13 @@ if __name__ == '__main__':
     parser_list.add_argument('-L', '--last-run', action='store_true',
                              help='show when each VM was last running (slower; "-" = not in the last year)')
     parser_list.set_defaults(func=list_vms)
+
+    parser_completion = subparsers.add_parser(
+        'completion', help="print a shell completion script",
+        description='Print a completion script; enable it by adding '
+                    '`eval "$(pokemon completion zsh)"` (or bash) to ~/.zshrc (~/.bashrc).')
+    parser_completion.add_argument('shell', choices=['bash', 'zsh'])
+    parser_completion.set_defaults(func=print_completion)
 
     args = parser.parse_args()
     if not hasattr(args, 'func'):

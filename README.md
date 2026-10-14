@@ -47,5 +47,16 @@ Without VM, `connect`, `mount` and `stop` let you choose from the running VMs
 
 Unmount with `fusermount -u MOUNTPOINT`.
 
+## Shell completion
+
+To complete commands and VM names (e.g., `pokemon connect <Tab>`), add to `~/.zshrc`
+(after `compinit`, i.e., after oh-my-zsh is loaded) or `~/.bashrc`:
+
+```
+eval "$(pokemon completion zsh)"     # or: eval "$(pokemon completion bash)"
+```
+
+The list of VMs is cached for 60 seconds in `~/.cache/pokemon/`.
+
 Environment: `POKEMON_VM_USER` (default user in VMs), `POKEMON_PROXXX`
 (path to the proxxx binary), `POKEMON_PROXXX_PROFILE` (proxxx profile).
