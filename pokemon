@@ -1,77 +1,133 @@
 #!/usr/bin/env python3
+"""pokemon - connect to VMs in VeriFIT's Proxmox cluster.
+
+All Proxmox queries go through proxxx (https://github.com/fabriziosalmi/proxxx),
+which holds the cluster URL and API token in its own config
+(~/.config/proxxx/config.toml, or $PROXXX_CONFIG).
+"""
 
 import argparse
+import getpass
+import ipaddress
+import json
 import os
-import re
+import shutil
+import subprocess
 import sys
 
-from proxmoxer import ProxmoxAPI   # docs at https://proxmoxer.github.io/docs/2.0/basic_usage/
+PROXXX = os.environ.get('POKEMON_PROXXX', 'proxxx')
+DOMAIN = 'fit.vutbr.cz'
 
-# import config
-
-SERVER='pikachu.fit.vutbr.cz'
-DOMAIN='fit.vutbr.cz'
-# PM_USER='root'
-PM_USER='guest@pve'
-# TOKEN_ID='guest@pve!script'
-TOKEN_ID='script'
-TOKEN_SECRET='71886fb6-d441-45bb-b898-ce635d632661'
-
-VM_USER="ondra"
-
+# VMs live in 10.10.10.0/24; a node forwards its port PORT_BASE + <last octet>
+# to port 22 of the VM with that address
+VM_NETWORK = ipaddress.ip_network('10.10.10.0/24')
 PORT_BASE = 6000
 
-prox = ProxmoxAPI(
-           SERVER,
-           user=PM_USER,
-           token_name=TOKEN_ID,
-           token_value=TOKEN_SECRET,
-           backend='https',
-         )
-
-# prox = ProxmoxAPI(SERVER, user=PM_USER, backend='openssh')
-# for node in prox.nodes.get():
-#     print(node)
-#     print(prox.nodes(node['node']).qemu.get())
-#     for vm in prox.nodes(node['node']).qemu.get():
-#         print(vm)
-#
-# print("bla")
 
 ###########################################
-def get_node_port_for_vm(vmname):
-    vms = prox.cluster.resources.get(type="vm")
-    # print(vms)
-    for vm in vms:
-    # for vm in prox.cluster.resources.get(type="vm"):
-        # print(f"Looking at VM {vm['name']}")
-        if vm['name'] == vmname:
-            node = vm['node']
-            netifcs = prox.nodes(node).qemu(vm['vmid']).agent("network-get-interfaces").get()
-            # print(netifcs)
-            for ifc in netifcs['result']:
-                # print(ifc)
-                for ip_addr in ifc['ip-addresses']:
-                    # print(ip_addr)
-                    m = re.match("10\.10\.10\.(.*)", ip_addr['ip-address'])
-                    if m:
-                        # print(ip_addr['ip-address'])
-                        port_offset = int(m[1])
+def die(msg):
+    print(f"pokemon: {msg}", file=sys.stderr)
+    sys.exit(1)
 
-            return (node, PORT_BASE + port_offset)
+
+###########################################
+def proxxx(args, *cmd):
+    """proxxx(args, *cmd) -> the JSON result of `proxxx <cmd>`"""
+    if shutil.which(PROXXX) is None:
+        die(f"'{PROXXX}' not found; install proxxx from "
+            "https://github.com/fabriziosalmi/proxxx/releases or set $POKEMON_PROXXX")
+
+    argv = [PROXXX, '--format', 'json']
+    if args.profile:
+        argv += ['--profile', args.profile]
+    argv += cmd
+
+    # proxxx logs at INFO level to stderr by default
+    env = dict(os.environ)
+    env.setdefault('RUST_LOG', 'proxxx=error')
+
+    proc = subprocess.run(argv, stdout=subprocess.PIPE, env=env, text=True)
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        die(f"unexpected output of '{' '.join(argv)}' (exit code {proc.returncode})")
+
+    # in JSON mode, proxxx reports errors as [{"status": "fatal_error", ...}]
+    if result and isinstance(result[0], dict) and result[0].get('status') == 'fatal_error':
+        msg = result[0].get('error', 'unknown error')
+        if 'hint' in result[0]:
+            msg += f"\n  hint: {result[0]['hint']}"
+        die(f"proxxx: {msg}")
+    if proc.returncode != 0:
+        die(f"'{' '.join(argv)}' failed with exit code {proc.returncode}")
+    return result
+
+
+###########################################
+def get_vms(args):
+    """get_vms(args) -> list of QEMU VMs (not templates) on online nodes"""
+    return [g for g in proxxx(args, 'ls', 'guests')
+            if g.get('type') == 'qemu' and not g.get('template')]
+
+
+###########################################
+def find_vm(args, vmname):
+    """find_vm(args, vmname) -> the proxxx guest record of the VM"""
+    vms = [vm for vm in get_vms(args) if vm.get('name') == vmname]
+    if not vms:
+        die(f"VM '{vmname}' not found (VMs on offline nodes are not visible)")
+    if len(vms) > 1:
+        ids = ", ".join(str(vm['vmid']) for vm in vms)
+        die(f"VM name '{vmname}' is ambiguous (VM IDs {ids})")
+    return vms[0]
+
+
+###########################################
+def get_vm_ip(args, vm):
+    """get_vm_ip(args, vm) -> the VM's address in VM_NETWORK (via the guest agent)"""
+    if vm['status'] != 'running':
+        die(f"VM '{vm['name']}' is {vm['status']}, not running")
+
+    (res,) = proxxx(args, 'qga', str(vm['vmid']), 'net')
+    for ifc in res['interfaces']:
+        for ip_addr in ifc.get('ip-addresses', []):
+            addr = ipaddress.ip_address(ip_addr['ip-address'])
+            if addr in VM_NETWORK:
+                return addr
+
+    die(f"VM '{vm['name']}' has no address in {VM_NETWORK}")
+
+
+###########################################
+def get_node_port_for_vm(args, vmname):
+    """get_node_port_for_vm(args, vmname) -> (node, port) to ssh to in order to reach the VM"""
+    vm = find_vm(args, vmname)
+    addr = get_vm_ip(args, vm)
+    port_offset = int(addr) - int(VM_NETWORK.network_address)
+    return (vm['node'], PORT_BASE + port_offset)
+
 
 ###########################################
 def connect_to_vm(args):
-    """connect_to_vm(args) ->
+    """connect_to_vm(args) -> replaces the process with ssh to the VM"""
+    (node, port) = get_node_port_for_vm(args, args.vm_name)
 
-
-"""
-    # print(get_ssh_connection(args.vm_name))
-    (node, port) = get_node_port_for_vm(args.vm_name)
-
-    ssh_args = ["ssh", f"{VM_USER}@{node}.{DOMAIN}", "-p", f"{port}"]
-    # print(ssh_args)
+    ssh_args = ["ssh", "-p", f"{port}", f"{args.user}@{node}.{DOMAIN}", *args.ssh_args]
+    if args.dry_run:
+        print(" ".join(ssh_args))
+        return
     os.execvp("ssh", ssh_args)
+
+
+###########################################
+def list_vms(args):
+    """list_vms(args) -> prints the VMs in the cluster"""
+    vms = sorted(get_vms(args), key=lambda vm: vm['name'])
+    if args.running:
+        vms = [vm for vm in vms if vm['status'] == 'running']
+    width = max((len(vm['name']) for vm in vms), default=0)
+    for vm in vms:
+        print(f"{vm['name']:<{width}}  {vm['vmid']:>5}  {vm['node']:<10}  {vm['status']}")
 
 
 ###########################################
@@ -79,9 +135,27 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         prog="pokemon",
         description='Management script for Pokemon VMs')
+    parser.add_argument('--profile', default=os.environ.get('POKEMON_PROXXX_PROFILE'),
+                        help='proxxx connection profile (default: $POKEMON_PROXXX_PROFILE or proxxx\'s default)')
     subparsers = parser.add_subparsers(help='sub-command help')
+
     parser_connect = subparsers.add_parser('connect', help="connect to a VM")
+    parser_connect.add_argument('-l', '--user', default=os.environ.get('POKEMON_VM_USER', getpass.getuser()),
+                                help='user name in the VM (default: $POKEMON_VM_USER or local user name)')
+    parser_connect.add_argument('-n', '--dry-run', action='store_true',
+                                help='only print the ssh command')
     parser_connect.add_argument('vm_name', type=str, help='VM name')
+    parser_connect.add_argument('ssh_args', nargs=argparse.REMAINDER,
+                                help='further arguments passed to ssh (e.g., a command)')
     parser_connect.set_defaults(func=connect_to_vm)
+
+    parser_list = subparsers.add_parser('list', help="list VMs")
+    parser_list.add_argument('-r', '--running', action='store_true',
+                             help='only running VMs')
+    parser_list.set_defaults(func=list_vms)
+
     args = parser.parse_args()
+    if not hasattr(args, 'func'):
+        parser.print_help()
+        sys.exit(1)
     args.func(args)
