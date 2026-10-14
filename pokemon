@@ -376,27 +376,28 @@ def show_cluster(args):
     (res,) = proxxx(args, 'cluster-resources')    # [{"count": N, "resources": [...]}]
     resources = res['resources']
     nodes = sorted((r for r in resources if r['type'] == 'node'), key=lambda r: r['node'])
-    # shared storages (NFS, ...) are not specific to a node, so they are left out
+    # shared storages (NFS, ...) are not specific to a node and 'local' is the
+    # root disk, so they are left out
     shared = {s['storage'] for s in proxxx(args, 'ls', 'storage') if s.get('shared')}
     storages = {(r['node'], r['storage']): r for r in resources
-                if r['type'] == 'storage' and r['storage'] not in shared}
+                if r['type'] == 'storage' and r['storage'] not in shared | {'local'}}
     storage_names = sorted({name for (_, name) in storages})
 
-    header = (["NODE", "STATUS", "CPU", "MEMORY", "ROOT DISK", "UPTIME"]
-              + [name.upper() for name in storage_names])
+    header = (["NODE", "STATUS", "CPU", "MEMORY", "ROOT DISK"]
+              + [name.upper() for name in storage_names] + ["UPTIME"])
     rows = []
     for node in nodes:
         row = [node['node'], node['status']]
         if node['status'] == 'online':
             row += [f"{100 * node['cpu']:.0f}% of {node['maxcpu']} cores",
                     usage(node['mem'], node['maxmem']),
-                    usage(node['disk'], node['maxdisk']),
-                    f"{node['uptime'] // 86400} days"]
+                    usage(node['disk'], node['maxdisk'])]
         else:
-            row += ["-"] * 4
+            row += ["-"] * 3
         for name in storage_names:
             st = storages.get((node['node'], name))
             row.append(usage(st['disk'], st['maxdisk']) if st and st['status'] == 'available' else "-")
+        row.append(f"{node['uptime'] // 86400} days" if node['status'] == 'online' else "-")
         rows.append(row)
     print_table(header, rows)
 
