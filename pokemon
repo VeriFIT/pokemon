@@ -498,7 +498,20 @@ ZSH_COMPLETION = r'''_pokemon() {
     _files -/
   fi
 }
-compdef _pokemon pokemon
+if (( $+functions[compdef] )); then
+  compdef _pokemon pokemon
+else
+  # compinit has not run yet (e.g., this is evaluated before oh-my-zsh is loaded):
+  # register at the first prompt, when ~/.zshrc is done, running compinit if nobody did
+  _pokemon_register() {
+    (( $+functions[compdef] )) || { autoload -Uz compinit && compinit }
+    compdef _pokemon pokemon
+    add-zsh-hook -d precmd _pokemon_register
+    unfunction _pokemon_register
+  }
+  autoload -Uz add-zsh-hook
+  add-zsh-hook precmd _pokemon_register
+fi
 '''
 
 BASH_COMPLETION = r'''_pokemon() {

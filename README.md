@@ -50,7 +50,7 @@ Unmount with `fusermount -u MOUNTPOINT`.
 ## Shell completion
 
 To complete commands and VM names (e.g., `pokemon connect <Tab>`), add to `~/.zshrc`
-(after `compinit`, i.e., after oh-my-zsh is loaded) or `~/.bashrc`:
+or `~/.bashrc`:
 
 ```
 eval "$(pokemon completion zsh)"     # or: eval "$(pokemon completion bash)"
