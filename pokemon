@@ -32,8 +32,11 @@ def die(msg):
 
 
 ###########################################
-def proxxx(args, *cmd):
-    """proxxx(args, *cmd) -> the JSON result of `proxxx <cmd>`"""
+def proxxx(args, *cmd, check=True):
+    """proxxx(args, *cmd, check=True) -> the JSON result of `proxxx <cmd>`
+
+Unless check is False, a non-zero exit code of proxxx is fatal.
+"""
     if shutil.which(PROXXX) is None:
         die(f"'{PROXXX}' not found; install proxxx from "
             "https://github.com/fabriziosalmi/proxxx/releases or set $POKEMON_PROXXX")
@@ -59,7 +62,7 @@ def proxxx(args, *cmd):
         if 'hint' in result[0]:
             msg += f"\n  hint: {result[0]['hint']}"
         die(f"proxxx: {msg}")
-    if proc.returncode != 0:
+    if check and proc.returncode != 0:
         die(f"'{' '.join(argv)}' failed with exit code {proc.returncode}")
     return result
 
@@ -81,10 +84,10 @@ def format_header(width):
 
 
 ###########################################
-def select_vm(vms):
-    """select_vm(vms) -> a VM from vms chosen interactively (via fzf if available)"""
+def select_vm(vms, status):
+    """select_vm(vms, status) -> a VM from vms (with the given status) chosen interactively (via fzf if available)"""
     if not vms:
-        die("no running VMs")
+        die(f"no {status} VMs")
     if not sys.stdin.isatty():
         die("no VM name given and stdin is not a terminal")
 
@@ -166,10 +169,13 @@ Arrows/PgUp/PgDn/Home/End move, Enter selects, Esc cancels, typing filters.
 
 
 ###########################################
-def find_vm(args, vmname):
-    """find_vm(args, vmname) -> the proxxx guest record of the VM (chosen interactively if vmname is None)"""
+def find_vm(args, vmname, status='running'):
+    """find_vm(args, vmname, status) -> the proxxx guest record of the VM
+
+If vmname is None, the VM is chosen interactively from VMs with the given status.
+"""
     if vmname is None:
-        return select_vm([vm for vm in get_vms(args) if vm['status'] == 'running'])
+        return select_vm([vm for vm in get_vms(args) if vm['status'] == status], status)
 
     vms = [vm for vm in get_vms(args) if vm.get('name') == vmname]
     if not vms:
@@ -239,6 +245,43 @@ def mount_vm(args):
 
 
 ###########################################
+def power_vm(args, vm, *cmd):
+    """power_vm(args, vm, *cmd) -> runs `proxxx <cmd> <vmid>` (start/stop) and reports the result"""
+    results = proxxx(args, *cmd, str(vm['vmid']), check=False)
+    for res in results:
+        if res.get('status') == 'success':
+            print(f"pokemon: {cmd[0]} of VM '{vm['name']}' requested (task {res.get('upid')})")
+        elif res.get('status') == 'pending_hitl':
+            print(f"pokemon: {cmd[0]} of VM '{vm['name']}' waits for approval: {res.get('message')}")
+        else:
+            die(f"{cmd[0]} of VM '{vm['name']}' failed: "
+                f"{res.get('message') or res.get('reason') or res.get('error')}")
+
+
+###########################################
+def start_vm(args):
+    """start_vm(args) -> starts the VM"""
+    vm = find_vm(args, args.vm_name, status='stopped')
+    if vm['status'] == 'running':
+        die(f"VM '{vm['name']}' is already running")
+    power_vm(args, vm, 'start')
+
+
+###########################################
+def stop_vm(args):
+    """stop_vm(args) -> shuts the VM down (or kills it with --force)"""
+    vm = find_vm(args, args.vm_name, status='running')
+    if vm['status'] == 'stopped':
+        die(f"VM '{vm['name']}' is already stopped")
+    cmd = ['stop', '--stop-timeout', str(args.timeout)]
+    if args.force:
+        cmd.append('--force')
+    if args.allow_risk:
+        cmd.append('--allow-risk')
+    power_vm(args, vm, *cmd)
+
+
+###########################################
 def list_vms(args):
     """list_vms(args) -> prints the VMs in the cluster"""
     vms = sorted(get_vms(args), key=lambda vm: vm['name'])
@@ -281,6 +324,20 @@ if __name__ == '__main__':
     parser_mount.add_argument('mountpoint', nargs='?', default=os.path.join(os.path.expanduser('~'), 'mnt'),
                               help='local directory (default: $HOME/mnt)')
     parser_mount.set_defaults(func=mount_vm)
+
+    parser_start = subparsers.add_parser('start', help="start a VM")
+    parser_start.add_argument('vm_name', nargs='?', help='VM name (default: choose from stopped VMs)')
+    parser_start.set_defaults(func=start_vm)
+
+    parser_stop = subparsers.add_parser('stop', help="shut a VM down")
+    parser_stop.add_argument('-f', '--force', action='store_true',
+                             help='kill the VM immediately instead of a graceful shutdown')
+    parser_stop.add_argument('-t', '--timeout', type=int, default=60,
+                             help='seconds to wait for a graceful shutdown before killing the VM (default: 60)')
+    parser_stop.add_argument('--allow-risk', action='store_true',
+                             help='override proxxx\'s pre-flight checks (e.g., a locked or HA-managed VM)')
+    parser_stop.add_argument('vm_name', nargs='?', help='VM name (default: choose from running VMs)')
+    parser_stop.set_defaults(func=stop_vm)
 
     parser_list = subparsers.add_parser('list', help="list VMs")
     parser_list.add_argument('-r', '--running', action='store_true',
