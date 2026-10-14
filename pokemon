@@ -120,6 +120,27 @@ def connect_to_vm(args):
 
 
 ###########################################
+def mount_vm(args):
+    """mount_vm(args) -> mounts the VM's filesystem via sshfs"""
+    (node, port) = get_node_port_for_vm(args, args.vm_name)
+
+    sshfs_args = ["sshfs", "-p", f"{port}", f"{args.user}@{node}.{DOMAIN}:{args.remote_path}",
+                  args.mountpoint]
+    for opt in args.options:
+        sshfs_args += ["-o", opt]
+    if args.dry_run:
+        print(" ".join(sshfs_args))
+        return
+
+    if shutil.which("sshfs") is None:
+        die("'sshfs' not found; install it (e.g., `apt install sshfs`)")
+    if os.path.ismount(args.mountpoint):
+        die(f"'{args.mountpoint}' is already a mount point")
+    os.makedirs(args.mountpoint, exist_ok=True)
+    os.execvp("sshfs", sshfs_args)
+
+
+###########################################
 def list_vms(args):
     """list_vms(args) -> prints the VMs in the cluster"""
     vms = sorted(get_vms(args), key=lambda vm: vm['name'])
@@ -148,6 +169,20 @@ if __name__ == '__main__':
     parser_connect.add_argument('ssh_args', nargs=argparse.REMAINDER,
                                 help='further arguments passed to ssh (e.g., a command)')
     parser_connect.set_defaults(func=connect_to_vm)
+
+    parser_mount = subparsers.add_parser('mount', help="mount a VM's filesystem via sshfs")
+    parser_mount.add_argument('-l', '--user', default=os.environ.get('POKEMON_VM_USER', getpass.getuser()),
+                              help='user name in the VM (default: $POKEMON_VM_USER or local user name)')
+    parser_mount.add_argument('-n', '--dry-run', action='store_true',
+                              help='only print the sshfs command')
+    parser_mount.add_argument('-o', dest='options', action='append', default=[],
+                              help='sshfs option (can be repeated)')
+    parser_mount.add_argument('vm_name', type=str, help='VM name')
+    parser_mount.add_argument('remote_path', nargs='?', default='',
+                              help='directory in the VM (default: the user\'s home)')
+    parser_mount.add_argument('mountpoint', nargs='?', default=os.path.join(os.path.expanduser('~'), 'mnt'),
+                              help='local directory (default: $HOME/mnt)')
+    parser_mount.set_defaults(func=mount_vm)
 
     parser_list = subparsers.add_parser('list', help="list VMs")
     parser_list.add_argument('-r', '--running', action='store_true',

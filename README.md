@@ -24,7 +24,12 @@ Instead of `token_secret_file`, the secret can also be passed in `$PROXXX_TOKEN_
 ```
 pokemon list [-r]                          # list VMs (-r: only running ones)
 pokemon connect [-l user] [-n] VM [CMD]    # ssh to a VM (-n: only print the ssh command)
+pokemon mount [-l user] [-n] [-o opt]... VM [REMOTE_PATH] [MOUNTPOINT]
+                                           # mount VM's REMOTE_PATH (default: home) via sshfs
+                                           # to MOUNTPOINT (default: $HOME/mnt)
 ```
+
+Unmount with `fusermount -u MOUNTPOINT`.
 
 Environment: `POKEMON_VM_USER` (default user in VMs), `POKEMON_PROXXX`
 (path to the proxxx binary), `POKEMON_PROXXX_PROFILE` (proxxx profile).
