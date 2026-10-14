@@ -373,7 +373,8 @@ def print_table(header, rows):
 ###########################################
 def show_cluster(args):
     """show_cluster(args) -> prints nodes with their CPU/memory/disk/(local) storage usage"""
-    resources = proxxx(args, 'cluster-resources')
+    (res,) = proxxx(args, 'cluster-resources')    # [{"count": N, "resources": [...]}]
+    resources = res['resources']
     nodes = sorted((r for r in resources if r['type'] == 'node'), key=lambda r: r['node'])
     # shared storages (NFS, ...) are not specific to a node, so they are left out
     shared = {s['storage'] for s in proxxx(args, 'ls', 'storage') if s.get('shared')}
