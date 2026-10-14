@@ -348,6 +348,59 @@ def list_vms(args):
 
 
 ###########################################
+def usage(used, total):
+    """usage(used, total) -> 'used/total unit (pct%)', both in the unit that suits total"""
+    if not total:
+        return "-"
+    (scaled_used, scaled_total) = (used, total)
+    for unit in ('B', 'KiB', 'MiB', 'GiB', 'TiB'):
+        if scaled_total < 1024 or unit == 'TiB':
+            break
+        (scaled_used, scaled_total) = (scaled_used / 1024, scaled_total / 1024)
+
+    def num(x):
+        return f"{x:.1f}" if x < 10 else f"{x:.0f}"
+    return f"{num(scaled_used)}/{num(scaled_total)} {unit} ({100 * used / total:.0f}%)"
+
+
+def print_table(header, rows):
+    """print_table(header, rows) -> prints rows (lists of strings) with aligned columns"""
+    widths = [max(len(row[i]) for row in [header] + rows) for i in range(len(header))]
+    for row in [header] + rows:
+        print("  ".join(cell.ljust(width) for (cell, width) in zip(row, widths)).rstrip())
+
+
+###########################################
+def show_cluster(args):
+    """show_cluster(args) -> prints nodes with their CPU/memory/disk/(local) storage usage"""
+    resources = proxxx(args, 'cluster-resources')
+    nodes = sorted((r for r in resources if r['type'] == 'node'), key=lambda r: r['node'])
+    # shared storages (NFS, ...) are not specific to a node, so they are left out
+    shared = {s['storage'] for s in proxxx(args, 'ls', 'storage') if s.get('shared')}
+    storages = {(r['node'], r['storage']): r for r in resources
+                if r['type'] == 'storage' and r['storage'] not in shared}
+    storage_names = sorted({name for (_, name) in storages})
+
+    header = (["NODE", "STATUS", "CPU", "MEMORY", "ROOT DISK", "UPTIME"]
+              + [name.upper() for name in storage_names])
+    rows = []
+    for node in nodes:
+        row = [node['node'], node['status']]
+        if node['status'] == 'online':
+            row += [f"{100 * node['cpu']:.0f}% of {node['maxcpu']} cores",
+                    usage(node['mem'], node['maxmem']),
+                    usage(node['disk'], node['maxdisk']),
+                    f"{node['uptime'] // 86400} days"]
+        else:
+            row += ["-"] * 4
+        for name in storage_names:
+            st = storages.get((node['node'], name))
+            row.append(usage(st['disk'], st['maxdisk']) if st and st['status'] == 'available' else "-")
+        rows.append(row)
+    print_table(header, rows)
+
+
+###########################################
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         prog="pokemon",
@@ -399,6 +452,9 @@ if __name__ == '__main__':
                            help='override proxxx\'s pre-flight checks (e.g., a locked or HA-managed VM)')
     parser_rm.add_argument('vm_name', nargs='?', help='VM name (default: choose from stopped VMs)')
     parser_rm.set_defaults(func=remove_vm)
+
+    parser_cluster = subparsers.add_parser('cluster', help="show the cluster's nodes and storages")
+    parser_cluster.set_defaults(func=show_cluster)
 
     parser_list = subparsers.add_parser('list', help="list VMs")
     parser_list.add_argument('-r', '--running', action='store_true',
