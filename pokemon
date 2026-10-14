@@ -76,6 +76,10 @@ def format_vm(vm, width):
     return f"{vm['name']:<{width}}  {vm['vmid']:>5}  {vm['node']:<10}  {vm['status']}"
 
 
+def format_header(width):
+    return f"{'NAME':<{width}}  {'VMID':>5}  {'NODE':<10}  STATUS"
+
+
 ###########################################
 def select_vm(vms):
     """select_vm(vms) -> a VM from vms chosen interactively (via fzf if available)"""
@@ -85,11 +89,12 @@ def select_vm(vms):
         die("no VM name given and stdin is not a terminal")
 
     vms = sorted(vms, key=lambda vm: vm['name'])
-    width = max(len(vm['name']) for vm in vms)
+    width = max(len(vm['name']) for vm in vms + [{'name': 'NAME'}])
     lines = [format_vm(vm, width) for vm in vms]
 
     if shutil.which("fzf"):
-        proc = subprocess.run(["fzf", "--prompt=VM> ", "--height=40%", "--reverse"],
+        proc = subprocess.run(["fzf", "--prompt=VM> ", "--height=40%", "--reverse",
+                               f"--header={format_header(width)}"],
                               input="\n".join(lines), stdout=subprocess.PIPE, text=True)
         if proc.returncode != 0:    # nothing selected (Esc / Ctrl-C)
             sys.exit(1)
@@ -99,7 +104,7 @@ def select_vm(vms):
         die("no VM name given and stdout is not a terminal (install fzf or give a VM name)")
     os.environ.setdefault('ESCDELAY', '25')    # make Esc respond without curses' default 1s delay
     try:
-        idx = curses.wrapper(menu, lines)
+        idx = curses.wrapper(menu, format_header(width), lines)
     except KeyboardInterrupt:
         idx = None
     if idx is None:
@@ -108,8 +113,8 @@ def select_vm(vms):
 
 
 ###########################################
-def menu(scr, lines):
-    """menu(scr, lines) -> index of the line chosen in a curses menu, None if cancelled
+def menu(scr, header, lines):
+    """menu(scr, header, lines) -> index of the line chosen in a curses menu, None if cancelled
 
 Arrows/PgUp/PgDn/Home/End move, Enter selects, Esc cancels, typing filters.
 """
@@ -120,16 +125,18 @@ Arrows/PgUp/PgDn/Home/End move, Enter selects, Esc cancels, typing filters.
     while True:
         shown = [i for (i, line) in enumerate(lines) if query.lower() in line.lower()]
         (height, width) = scr.getmaxyx()
-        rows = max(height - 1, 1)
+        rows = max(height - 2, 1)
         cur = max(0, min(cur, len(shown) - 1))
         top = max(min(top, cur), cur - rows + 1, 0)
 
         scr.erase()
         scr.addnstr(0, 0, f"VM> {query}  ({len(shown)}/{len(lines)})", width - 1, curses.A_BOLD)
-        for (row, i) in enumerate(shown[top:top + rows], 1):
+        if height > 1:
+            scr.addnstr(1, 0, header, width - 1, curses.A_UNDERLINE)
+        for (row, i) in enumerate(shown[top:top + rows], 2):
             if row >= height:
                 break
-            attr = curses.A_REVERSE if top + row - 1 == cur else curses.A_NORMAL
+            attr = curses.A_REVERSE if top + row - 2 == cur else curses.A_NORMAL
             scr.addnstr(row, 0, lines[i], width - 1, attr)
         scr.refresh()
 
